@@ -1,10 +1,12 @@
 [package]
-name = "limited_flow_covenant"
+name = "lfc"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 bip39 = { version = "2.1.0", features = ["rand"] }
+clap = { version = "4.5.28", features = ["derive"] }
+dirs = "6.0.0"
 hex-conservative = { version = "0.3.0", features = ["serde"] }
 lazy_static = "1.5.0"
 miniscript = {version = "12.3.0", features = ["serde", "rand", "compiler", "base64"]}

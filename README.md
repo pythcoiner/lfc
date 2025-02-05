@@ -1,6 +1,6 @@
-# Limited Flow Covenant
+# Limited Flow Channel
 
-![limited_flow_covenant](./assets/limited_flow_covenant.png)
+![limited_flow_channel](./assets/limited_flow_channel.png)
 
 ## Architecture
 
