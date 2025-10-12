@@ -2,7 +2,8 @@ pub mod commands;
 use std::{path::PathBuf, process};
 
 use clap::Parser;
-use lfc::channel_state::ChannelState;
+
+use crate::channel_state::ChannelState;
 
 fn datadir() -> PathBuf {
     #[cfg(target_os = "linux")]
@@ -42,7 +43,12 @@ fn maybe_create_dir(dir: &PathBuf) {
 
 pub fn parse() -> Args {
     let mut args = Args::parse();
-    let mut conf = datadir();
+    let mut conf = if let Some(dir) = args.datadir.as_ref() {
+        maybe_create_dir(dir);
+        dir.clone()
+    } else {
+        datadir()
+    };
     let mut path = args.wallet.clone();
     match !path.is_empty() {
         true => {
@@ -60,7 +66,7 @@ pub fn parse() -> Args {
         }
     }
 
-    if matches!(args.command, commands::Command::Conf { .. }) {
+    if !matches!(args.command, commands::Command::Conf { .. }) {
         if !conf.exists() {
             eprintln!("wallet {} does not exists!", args.wallet);
             process::exit(1);
@@ -91,6 +97,10 @@ pub struct Args {
     /// option to output raw json to stdout
     #[arg(short, long, default_value_t = false)]
     pub raw: bool,
+    /// Path supplied by user
+    #[arg(short, long)]
+    pub datadir: Option<PathBuf>,
+
     /// Validated file path
     #[arg(skip)]
     pub path: PathBuf,

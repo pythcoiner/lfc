@@ -1,6 +1,4 @@
-mod cli;
-
-use cli::commands::Command;
+use lfc::cli::{self, commands::Command};
 
 fn main() {
     let args = cli::parse();

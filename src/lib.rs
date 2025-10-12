@@ -1,5 +1,6 @@
 pub mod channel;
 pub mod channel_state;
+pub mod cli;
 pub mod round;
 
 use std::io::{self};

@@ -1,14 +1,17 @@
-use std::{io, str::FromStr};
+use std::{
+    io::{self, Write},
+    str::FromStr,
+};
 
-use bip39::Mnemonic;
-use clap::Subcommand;
-use lfc::{
+use crate::{
     channel::Channel,
     channel_state::ChannelState,
     parse_tx,
     round::{Round, Rounds},
     FEE, MAX_DERIV,
 };
+use bip39::Mnemonic;
+use clap::Subcommand;
 use miniscript::bitcoin::{
     address::NetworkUnchecked, consensus, Address, Amount, Network, Transaction,
 };
@@ -59,7 +62,8 @@ pub enum Command {
 }
 
 pub fn input(txt: &str) -> String {
-    eprintln!("{}", txt);
+    println!("{}", txt);
+    std::io::stdout().flush().unwrap();
     let mut name = String::new();
     _ = io::stdin().read_line(&mut name).unwrap();
     name = name.trim().to_string();
@@ -79,7 +83,7 @@ pub fn conf(args: Args) {
     assert!(matches!(args.command, Command::Conf { .. }));
     let index = input(&format!(
         "Select a derivation index for the wallet: 0-{}",
-        lfc::MAX_DERIV
+        MAX_DERIV
     ));
     let index = match index.parse::<u32>() {
         Ok(i) => {
@@ -141,6 +145,8 @@ pub fn conf(args: Args) {
         path: args.path,
     };
     conf.to_file().unwrap();
+
+    println!("Configuration file saved!");
 }
 
 pub fn create(mut args: Args) {
