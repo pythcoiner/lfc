@@ -50,8 +50,8 @@ pub fn parse() -> Args {
         datadir()
     };
     let mut path = args.wallet.clone();
-    match !path.is_empty() {
-        true => {
+    match path.is_empty() {
+        false => {
             if path.contains("/") {
                 eprintln!("wallet must be a name, not a path!");
                 process::exit(1);
@@ -61,18 +61,18 @@ pub fn parse() -> Args {
             }
             conf.push(path);
         }
-        false => {
+        true => {
             conf.push("lfc.conf");
         }
     }
 
     if !matches!(args.command, commands::Command::Conf { .. }) {
         if !conf.exists() {
-            eprintln!("wallet {} does not exists!", args.wallet);
+            eprintln!("wallet {} does not exists! ({:?})", args.wallet, conf);
             process::exit(1);
         }
         if !conf.is_file() {
-            eprintln!("wallet {} is not a file!", args.wallet);
+            eprintln!("wallet {} is not a file! ({:?})", args.wallet, conf);
             process::exit(1);
         }
     } else if conf.exists() {

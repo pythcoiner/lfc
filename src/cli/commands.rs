@@ -80,6 +80,7 @@ pub fn del_wallet(args: Args) {
 }
 
 pub fn conf(args: Args) {
+    // println!("conf: path={:?}", args.path);
     assert!(matches!(args.command, Command::Conf { .. }));
     let index = input(&format!(
         "Select a derivation index for the wallet: 0-{}",
@@ -146,7 +147,7 @@ pub fn conf(args: Args) {
     };
     conf.to_file().unwrap();
 
-    println!("Configuration file saved!");
+    println!("Configuration file saved at {:?}!", conf.path);
 }
 
 pub fn create(mut args: Args) {

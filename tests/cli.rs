@@ -11,13 +11,19 @@ use temp_dir::TempDir;
 
 fn lfc(
     args: Vec<String>,
+    tmp_dir: Option<TempDir>,
 ) -> (
     BufWriter<PipeWriter>,
     BufReader<PipeReader>,
     JoinHandle<Output>,
     TempDir,
 ) {
-    let tmp_dir = temp_dir::TempDir::new().unwrap();
+    // let tmp_dir = temp_dir::TempDir::new().unwrap();
+    let tmp_dir = if let Some(tmp_dir) = tmp_dir {
+        tmp_dir
+    } else {
+        temp_dir::TempDir::new().unwrap()
+    };
     let (stdout, sender) = os_pipe::pipe().unwrap();
     let (receiver, stdin) = os_pipe::pipe().unwrap();
     let datadir = tmp_dir.path().to_str().unwrap().to_string();
@@ -96,7 +102,9 @@ fn init_conf(
     amount: f64,
     delay: u64,
 ) -> TempDir {
-    let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()]);
+    let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()], None);
+
+    print_stdout(&mut stdout);
 
     send_stdin(&format!("{index}"), &mut stdin);
     print_stdout(&mut stdout);
@@ -113,15 +121,24 @@ fn init_conf(
     print_stdout(&mut stdout);
 
     send_stdin(&format!("{delay}"), &mut stdin);
-    print_stdout(&mut stdout);
 
     let _stdout = output_contains("Configuration file saved", stdout);
     tmp_dir
 }
 
+#[allow(unused)]
+fn dump(timeout: u64, stdout: &mut BufReader<PipeReader>) {
+    let stop = time::SystemTime::now()
+        .checked_add(Duration::from_secs(timeout))
+        .unwrap();
+    while time::SystemTime::now() < stop {
+        print_stdout(stdout);
+    }
+}
+
 #[test]
 fn test_cli_conf() {
-    let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()]);
+    let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()], None);
 
     stdout = output_contains("Select a derivation index for the wallet", stdout);
     send_stdin("0", &mut stdin);
@@ -152,13 +169,6 @@ fn test_cli_conf() {
     assert!(!state.spend_mnemonic.is_empty());
     assert_eq!(state.amount, 1_000_000);
     assert_eq!(state.delay, 100);
-
-    // let stop = time::SystemTime::now()
-    //     .checked_add(Duration::from_secs(5))
-    //     .unwrap();
-    // while time::SystemTime::now() < stop {
-    //     print_line(&mut stdout);
-    // }
 }
 
 #[test]
@@ -182,4 +192,36 @@ fn test_conf_wrong_spend_mnemonic() {
 #[should_panic]
 fn test_conf_wrong_index() {
     let _ = init_conf(u32::MAX, None, None, 0.1, 100);
+}
+
+#[test]
+fn test_del() {
+    let datadir = init_conf(0, None, None, 0.1, 100);
+
+    let mut dir = datadir.path().to_path_buf();
+    dir.push("lfc.conf");
+    assert!(dir.exists());
+    assert!(dir.is_file());
+    println!("{:?} exists {}", dir, dir.exists());
+
+    std::thread::sleep(Duration::from_secs(2));
+    println!("del");
+
+    println!("{:?} exists {}", dir, dir.exists());
+
+    let (mut stdin, stdout, _, datadir) = lfc(vec!["del".to_string()], Some(datadir));
+    std::thread::sleep(Duration::from_millis(200));
+    let _stdout = output_contains("Are you sure to delete wallet", stdout);
+    send_stdin("n", &mut stdin);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(dir.exists());
+
+    // NOTE: _tmp must note be drop else we have a false positive of deletion
+    let (mut stdin, stdout, _, _tmp) = lfc(vec!["del".to_string()], Some(datadir));
+    std::thread::sleep(Duration::from_millis(200));
+    let _stdout = output_contains("Are you sure to delete wallet", stdout);
+    send_stdin("y", &mut stdin);
+
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!dir.exists());
 }
