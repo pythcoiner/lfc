@@ -39,7 +39,7 @@ fn lfc(
     (BufWriter::new(stdin), BufReader::new(stdout), cmd, tmp_dir)
 }
 
-fn print_line(stdout: &mut BufReader<PipeReader>) {
+fn print_stdout(stdout: &mut BufReader<PipeReader>) {
     let mut str = String::new();
     if let Ok(l) = stdout.read_line(&mut str) {
         if l > 0 {
@@ -89,6 +89,36 @@ fn send_stdin(text: &str, stdin: &mut BufWriter<PipeWriter>) {
     stdin.flush().unwrap();
 }
 
+fn init_conf(
+    index: u32,
+    cov_mnemonic: Option<String>,
+    spend_mnemonic: Option<String>,
+    amount: f64,
+    delay: u64,
+) -> TempDir {
+    let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()]);
+
+    send_stdin(&format!("{index}"), &mut stdin);
+    print_stdout(&mut stdout);
+
+    let cov_mnemonic = cov_mnemonic.unwrap_or_default().to_string();
+    let spend_mnemonic = spend_mnemonic.unwrap_or_default().to_string();
+    send_stdin(&cov_mnemonic, &mut stdin);
+    print_stdout(&mut stdout);
+
+    send_stdin(&spend_mnemonic, &mut stdin);
+    print_stdout(&mut stdout);
+
+    send_stdin(&format!("{amount}"), &mut stdin);
+    print_stdout(&mut stdout);
+
+    send_stdin(&format!("{delay}"), &mut stdin);
+    print_stdout(&mut stdout);
+
+    let _stdout = output_contains("Configuration file saved", stdout);
+    tmp_dir
+}
+
 #[test]
 fn test_cli_conf() {
     let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()]);
@@ -129,4 +159,27 @@ fn test_cli_conf() {
     // while time::SystemTime::now() < stop {
     //     print_line(&mut stdout);
     // }
+}
+
+#[test]
+fn test_init_conf() {
+    let _ = init_conf(0, None, None, 0.1, 100);
+}
+
+#[test]
+#[should_panic]
+fn test_conf_wrong_cold_mnemonic() {
+    let _ = init_conf(0, Some("wrong mnemo".to_string()), None, 0.1, 100);
+}
+
+#[test]
+#[should_panic]
+fn test_conf_wrong_spend_mnemonic() {
+    let _ = init_conf(0, None, Some("wrong".to_string()), 0.1, 100);
+}
+
+#[test]
+#[should_panic]
+fn test_conf_wrong_index() {
+    let _ = init_conf(u32::MAX, None, None, 0.1, 100);
 }
