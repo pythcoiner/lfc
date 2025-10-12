@@ -29,16 +29,16 @@ pub enum Command {
     Create,
     /// Sign all presigned PSBTs
     Sign,
-    /// Register a broadcasted transaction
+    /// Start an unlock round
+    Unlock,
+    /// Register a confirmed transaction
     Register {
-        /// Block height where the transaction have been include
+        /// Block height where the transaction have been included in a block
         height: u64,
         /// Transaction in hex format
         #[arg( value_parser = parse_tx)]
         transaction: Transaction,
     },
-    /// Start an unlock round
-    Unlock,
     /// Broadcast a lock transaction if available
     Lock,
     /// Relock an available coin
@@ -51,6 +51,9 @@ pub enum Command {
         /// Recipient address
         address: Address<NetworkUnchecked>,
     },
+    /// List spendable coins
+    #[command(alias = "sendable")]
+    Spendable,
     /// Delete the wallet
     Del,
 }

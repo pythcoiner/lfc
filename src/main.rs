@@ -22,6 +22,7 @@ fn main() {
             amount: _,
             address: _,
         } => {}
+        Command::Spendable => todo!(),
         Command::Lock => todo!(),
         Command::Relock => todo!(),
         Command::Del => cli::commands::del_wallet(args),
