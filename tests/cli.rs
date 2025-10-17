@@ -45,11 +45,11 @@ fn lfc(
     (BufWriter::new(stdin), BufReader::new(stdout), cmd, tmp_dir)
 }
 
-fn print_stdout(stdout: &mut BufReader<PipeReader>) {
+fn print_stdout(stdout: &mut BufReader<PipeReader>, prefix: &str) {
     let mut str = String::new();
     if let Ok(l) = stdout.read_line(&mut str) {
         if l > 0 {
-            println!("{str}");
+            println!("{prefix}{str}");
         }
     }
 }
@@ -104,21 +104,21 @@ fn init_conf(
 ) -> TempDir {
     let (mut stdin, mut stdout, _handle, tmp_dir) = lfc(vec!["conf".to_string()], None);
 
-    print_stdout(&mut stdout);
+    print_stdout(&mut stdout, "");
 
     send_stdin(&format!("{index}"), &mut stdin);
-    print_stdout(&mut stdout);
+    print_stdout(&mut stdout, "");
 
     let cov_mnemonic = cov_mnemonic.unwrap_or_default().to_string();
     let spend_mnemonic = spend_mnemonic.unwrap_or_default().to_string();
     send_stdin(&cov_mnemonic, &mut stdin);
-    print_stdout(&mut stdout);
+    print_stdout(&mut stdout, "");
 
     send_stdin(&spend_mnemonic, &mut stdin);
-    print_stdout(&mut stdout);
+    print_stdout(&mut stdout, "");
 
     send_stdin(&format!("{amount}"), &mut stdin);
-    print_stdout(&mut stdout);
+    print_stdout(&mut stdout, "");
 
     send_stdin(&format!("{delay}"), &mut stdin);
 
@@ -132,7 +132,7 @@ fn dump(timeout: u64, stdout: &mut BufReader<PipeReader>) {
         .checked_add(Duration::from_secs(timeout))
         .unwrap();
     while time::SystemTime::now() < stop {
-        print_stdout(stdout);
+        print_stdout(stdout, "- ");
     }
 }
 
@@ -202,12 +202,8 @@ fn test_del() {
     dir.push("lfc.conf");
     assert!(dir.exists());
     assert!(dir.is_file());
-    println!("{:?} exists {}", dir, dir.exists());
 
     std::thread::sleep(Duration::from_secs(2));
-    println!("del");
-
-    println!("{:?} exists {}", dir, dir.exists());
 
     let (mut stdin, stdout, _, datadir) = lfc(vec!["del".to_string()], Some(datadir));
     std::thread::sleep(Duration::from_millis(200));
@@ -224,4 +220,42 @@ fn test_del() {
 
     std::thread::sleep(Duration::from_millis(200));
     assert!(!dir.exists());
+}
+
+#[test]
+fn test_create() {
+    let cov = "task glad violin popular angry arrange assume debate welcome earth crunch side"
+        .to_string();
+    let spend =
+        "ceiling blue sing poverty bean yellow fat basket merge behave crystal tiny".to_string();
+    let datadir = init_conf(0, Some(cov), Some(spend), 0.1, 100);
+
+    let mut dir = datadir.path().to_path_buf();
+    dir.push("lfc.conf");
+
+    std::thread::sleep(Duration::from_secs(1));
+
+    let (mut stdin, mut stdout, _, _datadir) = lfc(vec!["create".to_string()], Some(datadir));
+    std::thread::sleep(Duration::from_millis(200));
+
+    let mut buf = String::new();
+    for _ in 0..10 {
+        let _ = stdout.read_line(&mut buf);
+    }
+
+    stdout = output_contains(
+        "Address to fund the contract: bcrt1q70rqqql720wv2gr0q8u3rleqqu7h05e7z88mvg",
+        stdout,
+    );
+    stdout = output_contains("Enter raw tx that fund the contract", stdout);
+
+    let raw_tx = "020000000001018dd2f188c07d64feb5590f05becc1393cd7874193896becb96ca6fc03a554e9c0100000000fdffffff0200e1f50500000000160014f3c60003fe53dcc5206f01f911ff20073d77d33e5ee8a43500000000220020255487893037882f10106d26fd0769bbdb967b8a82cb90faa9dcdaa3ae0cb1890247304402202b6c623d2bbcd96ba8c0f4ee1b3e1be648083e266a44d22e9decc6802e03e32b022054a6ac26661e230066d8b4a406156821e14d0a69ffe699b0113ead4d8b7c6c49014421025f222dcd8035d3d5a08db9b93273b0194826a686eb7ba402e75b92c7cd9bebfbac736476a914d041e63340f920609e14e91a5ed705b8c796c20c88ad0374cd00b268e8020000";
+    send_stdin(raw_tx, &mut stdin);
+
+    let mut buf = String::new();
+    for _ in 0..10 {
+        let _ = stdout.read_line(&mut buf);
+    }
+
+    let _stdout = output_contains("Successfully generated 10 rounds!", stdout);
 }

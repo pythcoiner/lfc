@@ -80,6 +80,22 @@ pub fn parse() -> Args {
         process::exit(1);
     }
     args.path = conf.clone();
+
+    match args.command {
+        commands::Command::Conf { .. } | commands::Command::Del => { /* we dont need load the state */
+        }
+        _ => {
+            let path = conf.clone();
+            args.state = match ChannelState::from_file(path.to_str().unwrap()) {
+                Ok(s) => Some(s),
+                _ => {
+                    println!("Fail to load state from file!");
+                    process::exit(1);
+                }
+            };
+        }
+    }
+
     if let Some(state) = args.state.as_mut() {
         state.rounds.init();
         state.path = conf;

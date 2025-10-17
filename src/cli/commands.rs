@@ -154,6 +154,9 @@ pub fn create(mut args: Args) {
     assert!(matches!(args.command, Command::Create));
     let mut state = args.state.take().unwrap();
 
+    // println!("mnemo1: {}", state.cov_mnemonic);
+    // println!("mnemo1: {}", state.spend_mnemonic);
+
     let channel = Channel::from_state(&state);
     let funding_addr = channel.cov_addr(0);
 
@@ -171,15 +174,22 @@ pub fn create(mut args: Args) {
         }
     };
 
-    if tx0.output[0].script_pubkey != funding_addr.script_pubkey() {
-        eprintln!("The first output of the tx must fund the funding address!");
+    let mut amount = None;
+    for txout in &tx0.output {
+        if txout.script_pubkey == funding_addr.script_pubkey() {
+            amount = Some(txout.value);
+        }
+    }
+
+    if amount.is_none() {
+        eprintln!("This transaction do not contains a funding output!");
         std::process::exit(1);
     }
 
-    let amount = tx0.output[0].value.to_sat();
+    let amount = amount.unwrap().to_sat();
 
     if amount == 0 {
-        eprintln!("Amount of funding input must be > 0");
+        eprintln!("Amount of funding output must be > 0");
         std::process::exit(1);
     }
 
@@ -222,6 +232,8 @@ pub fn create(mut args: Args) {
         let round = Round::new(psbt, index);
         state.rounds.push(round);
     }
+
+    println!("Successfully generated {index} rounds!");
 
     state.to_file().unwrap();
 }
