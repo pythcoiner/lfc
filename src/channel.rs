@@ -13,8 +13,7 @@ use miniscript::{
         Transaction, TxIn, TxOut, Witness,
     },
     descriptor::Wpkh,
-    psbt::{PsbtInputExt, PsbtOutputExt},
-    Descriptor, DescriptorPublicKey,
+    Descriptor, DescriptorPublicKey, ToPublicKey,
 };
 
 const SUB_ACCOUNT: u32 = 0;
@@ -61,11 +60,7 @@ impl Channel {
 
         let cov_descriptor = Descriptor::Wpkh(Wpkh::new(cov.clone()).unwrap());
 
-        println!("cov_descriptor: \n \n{} \n \n", cov_descriptor);
-
         let spend_descriptor = Descriptor::Wpkh(Wpkh::new(spend.clone()).unwrap());
-
-        println!("spend_descriptor: \n \n{} \n \n", spend_descriptor);
 
         Self {
             cov,
@@ -94,10 +89,26 @@ impl Channel {
     }
 
     pub fn craft_tx(&self, previous_tx: Transaction, index: u32, spend: u64, relock: u64) -> Psbt {
-        println!(
-            "craft_tx(index: {}, spend: {}, relock: {})",
-            index, spend, relock,
-        );
+        // TODO: do not hardcode fees
+        const DUST: u64 = 500;
+        let vbytes = 150;
+        #[allow(clippy::identity_op)]
+        let fees = vbytes * 1; /* sats */
+        println!("Generate transaction for round {index}, spending {spend} and relocking {relock}");
+
+        // deduct fees
+        let (spend, relock) = if relock < fees {
+            let fees = fees - relock;
+            let relock = 0;
+            let spend = spend - fees;
+            (spend, relock)
+        } else {
+            let relock = relock - fees;
+            (spend, relock)
+        };
+
+        let relock = if relock < DUST { 0 } else { relock };
+
         let spend = Amount::from_sat(spend);
         let relock = Amount::from_sat(relock);
         let relock_addr = self.cov_addr(index);
@@ -136,34 +147,28 @@ impl Channel {
         assert!(self
             .cov_addr(index - 1)
             .matches_script_pubkey(&previous_tx.output[0].script_pubkey));
-        let spend_descriptor = self.cov_descriptor.at_derivation_index(index - 1).unwrap();
-
-        psbt_input
-            .update_with_descriptor_unchecked(&spend_descriptor)
-            .unwrap();
+        let input_descriptor = self.cov_descriptor.at_derivation_index(index - 1).unwrap();
 
         psbt_input.witness_utxo = Some(previous_tx.output[0].clone());
 
         let psbt_inputs = vec![psbt_input];
 
-        let mut psbt_relock = Output::default();
-        let out_descriptor = self.cov_descriptor.at_derivation_index(index).unwrap();
-        psbt_relock
-            .update_with_descriptor_unchecked(&out_descriptor)
-            .unwrap();
-        let psbt_spend = Output::default();
+        let relock_decriptor = self.cov_descriptor.at_derivation_index(index).unwrap();
+        let spend_descriptor = self.spend_descriptor.at_derivation_index(index).unwrap();
+        let output_relock = Output::default();
+        let output_spend = Output::default();
 
         let psbt_outputs = if relock != Amount::ZERO {
-            vec![psbt_relock, psbt_spend]
+            vec![output_relock, output_spend]
         } else {
-            vec![psbt_spend]
+            vec![output_spend]
         };
 
         // store the index in the proprietary map
         let mut proprietary = BTreeMap::new();
         proprietary.insert(index_key!(), index.to_le_bytes().to_vec());
 
-        Psbt {
+        let mut psbt = Psbt {
             unsigned_tx: tx,
             version: 0,
             xpub: BTreeMap::new(),
@@ -171,7 +176,20 @@ impl Channel {
             unknown: BTreeMap::new(),
             inputs: psbt_inputs,
             outputs: psbt_outputs,
+        };
+
+        // Populate input metadata
+        PsbtExt::update_input_with_descriptor(&mut psbt, 0, &input_descriptor).unwrap();
+
+        // Populate outputs metadata
+        if relock != Amount::ZERO {
+            PsbtExt::update_output_with_descriptor(&mut psbt, 0, &relock_decriptor).unwrap();
+            PsbtExt::update_output_with_descriptor(&mut psbt, 1, &spend_descriptor).unwrap();
+        } else {
+            PsbtExt::update_output_with_descriptor(&mut psbt, 0, &spend_descriptor).unwrap();
         }
+
+        psbt
     }
 
     pub fn presign_psbt(&self, psbt: &mut Psbt, state: &ChannelState) {
@@ -183,7 +201,7 @@ impl Channel {
             .to_vec()
             .try_into()
             .unwrap();
-        let index = u32::from_le_bytes(raw_index);
+        let index = u32::from_le_bytes(raw_index) - 1;
 
         assert_eq!(psbt.inputs.len(), 1);
         // TODO: verify outputs go to the right descriptors
@@ -201,8 +219,8 @@ impl Channel {
             signature,
             sighash_type: EcdsaSighashType::All,
         };
-        let witness = Witness::p2wpkh(&signature, &pk);
-
-        psbt.inputs[0].final_script_witness = Some(witness);
+        psbt.inputs[0]
+            .partial_sigs
+            .insert(pk.to_public_key(), signature);
     }
 }

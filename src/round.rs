@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use miniscript::{
     bitcoin::{Amount, OutPoint, Psbt, Transaction, TxOut},
     psbt::PsbtExt,
@@ -6,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::SECP;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct Round {
     // Psbt of this round, already signed
     psbt: Psbt,
@@ -30,6 +32,23 @@ pub struct Round {
     closed: bool,
 }
 
+impl Debug for Round {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Round")
+            .field("psbt", &"[redacted]".to_string())
+            .field("signed_tx", &self.signed.is_some())
+            .field("spend_tx", &self.spend.is_some())
+            .field("transactions", &self.transactions.len())
+            .field("coins", &self.coins.len())
+            .field("unlock", &self.unlock)
+            .field("unlocked", &self.unlocked)
+            .field("index", &self.index)
+            .field("active", &self.active)
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
+
 impl Round {
     pub fn new(psbt: Psbt, index: u32) -> Self {
         assert!(index > 0); // 0 is funding round
@@ -48,14 +67,21 @@ impl Round {
         }
     }
 
-    pub fn sign(&mut self, sign_fn: fn(&mut Psbt)) -> bool {
+    pub fn sign<S>(&mut self, sign_fn: S) -> bool
+    where
+        S: Fn(&mut Psbt),
+    {
         sign_fn(&mut self.psbt);
-        if self.psbt.finalize_mut(&SECP).is_ok() {
-            let tx = self.psbt.clone().extract_tx_unchecked_fee_rate();
-            self.signed = Some(tx);
-            true
-        } else {
-            false
+        match self.psbt.finalize_mut(&SECP) {
+            Ok(_) => {
+                let tx = self.psbt.clone().extract_tx_unchecked_fee_rate();
+                self.signed = Some(tx);
+                true
+            }
+            Err(e) => {
+                println!("Fail to sign: {e:#?}");
+                false
+            }
         }
     }
 
@@ -263,14 +289,40 @@ impl Rounds {
         }
     }
 
-    fn register_unlock(&mut self, tx: Transaction, block_height: u64, timelock: u64) -> bool {
+    fn try_register_unlock(&mut self, tx: Transaction, block_height: u64, delay: u64) -> bool {
         let index = self.current_round_index();
-        let round = self.at(index).unwrap();
-        let unlocked = round.register_unlocked(tx, block_height);
 
-        if let (true, Some(next)) = (unlocked, self.at(index + 1)) {
-            next.register_unlock_height(block_height + timelock);
-        }
+        let current_unlocked = self.at(index).unwrap().is_unlocked();
+        let unlocked = if !current_unlocked {
+            // We try unlock current round
+            let round = self.at(index).unwrap();
+            let unlocked = if round.is_unlockable(block_height) {
+                round.register_unlocked(tx, block_height)
+            } else {
+                false
+            };
+            if let (true, Some(next)) = (unlocked, self.at(index + 1)) {
+                next.register_unlock_height(block_height + delay);
+            }
+            unlocked
+        } else if let Some(next) = self.at(index + 1) {
+            // We try unlock the next round
+            if !next.is_unlocked() && next.is_unlockable(block_height) {
+                let ul = next.register_unlocked(tx, block_height);
+                if ul {
+                    next.set_active(true);
+                    self.at(index).expect("current round").set_active(false);
+                    if let (true, Some(next_next)) = (ul, self.at(index + 2)) {
+                        next_next.register_unlock_height(block_height + delay);
+                    }
+                }
+                ul
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         unlocked
     }
 
@@ -283,20 +335,18 @@ impl Rounds {
         &mut self,
         tx: Transaction,
         block_height: u64,
-        timelock: u64,
+        delay: u64,
     ) -> (bool /* unlock */, bool /* spend */) {
-        let index = self.current_round_index();
-        let round = self.at(index).unwrap();
-        let unlocked = if round.is_unlockable(block_height) {
-            self.register_unlock(tx.clone(), block_height, timelock)
-        } else {
-            false
-        };
-        let spend = if !unlocked {
-            self.register_spend(tx)
-        } else {
-            false
-        };
+        let spend = false;
+
+        let unlocked = self.try_register_unlock(tx.clone(), block_height, delay);
+
+        // TODO:
+        // let spend = if !unlocked {
+        //     self.register_spend(tx)
+        // } else {
+        //     false
+        // };
         (unlocked, spend)
     }
 

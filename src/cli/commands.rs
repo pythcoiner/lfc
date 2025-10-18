@@ -243,16 +243,19 @@ pub fn sign(mut args: Args) {
     let mut state = args.state.take().unwrap();
     assert!(!state.rounds.is_empty());
 
-    let _channel = Channel::from_state(&state);
+    let channel = Channel::from_state(&state);
 
     let s = state.clone();
-    for _round in state.rounds.as_mut_vec() {
-        let _s = s.clone();
-        // FIXME::
-        // round.sign(|psbt| {
-        //     channel.presign_psbt(psbt, state);
-        // });
+    let mut index = 0;
+    for round in state.rounds.as_mut_vec() {
+        index += 1;
+        println!("Signing round {index}");
+        round.sign(|psbt| {
+            channel.presign_psbt(psbt, &s);
+        });
     }
+
+    println!("Successfully signed {index} rounds!");
 
     state.to_file().unwrap();
 }
@@ -263,21 +266,38 @@ pub fn unlock(mut args: Args) {
     let rounds = &mut state.rounds;
 
     let index = rounds.current_round_index();
-
     let current = rounds.at(index).unwrap();
+
+    fn on_unlock_tx(tx: Transaction, height: Option<u64>, index: usize, next: bool) {
+        let round = if next { "next" } else { "current" };
+        let tx = consensus::encode::serialize_hex(&tx);
+        if let Some(height) = height {
+            println!(
+                    "Round {index} => Broadcast this transaction to unlock the {round} round after block height {height}: \n{tx}",
+                );
+        } else {
+            println!(
+                "Round {index} => Broadcast this transaction to unlock the {round} round: \n{tx}",
+            );
+        }
+    }
+
     match current.unlock() {
         Some(tx) => {
-            println!(
-                    "Broadcast this transaction tu unlock the current round after block height {}: \n{}",
-                    current.unlock_after().unwrap(),
-                    serde_json::to_string(&tx).unwrap()
-                );
+            let height = current.unlock_after();
+            on_unlock_tx(tx, height, index, false);
         }
         None => {
-            if rounds.at(index + 1).is_none() {
-                println!("No more round to unlock!");
+            let next = rounds.at(index + 1);
+            if let Some(next) = next {
+                if let Some(tx) = next.unlock() {
+                    let height = next.unlock_after();
+                    on_unlock_tx(tx, height, index + 1, true);
+                } else {
+                    println!("Fail to get unlock transaction for this round and next one! (rounds {index} & {})", index + 1);
+                }
             } else {
-                println!("Fail to get unlock transaction!");
+                println!("No more round to unlock!");
             }
         }
     }
@@ -294,6 +314,8 @@ pub fn register(mut args: Args, tx: Transaction, height: u64) {
         println!("Unlock registered!")
     } else if spend {
         println!("Spend registered!")
+    } else {
+        println!("Transaction has not been registered!")
     }
 
     state.to_file().unwrap();
