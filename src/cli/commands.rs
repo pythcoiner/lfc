@@ -99,12 +99,12 @@ pub fn conf(args: Args) {
     .unwrap();
 
     let mnemo = input(
-        "Enter the mnemonic for your covenant wallet \
+        "Enter the mnemonic for your master wallet \
         (12 words), if the input is empty a mnemonic phrase will be automatically generated:",
     )
     .trim()
     .to_string();
-    let cov_mnemonic = if mnemo.is_empty() {
+    let master_mnemonic = if mnemo.is_empty() {
         Mnemonic::generate(12).unwrap().to_string()
     } else {
         Mnemonic::from_str(&mnemo).unwrap().to_string()
@@ -136,7 +136,7 @@ pub fn conf(args: Args) {
     };
 
     let conf = ChannelState {
-        cov_mnemonic,
+        master_mnemonic,
         spend_mnemonic,
         amount,
         delay,
@@ -154,11 +154,8 @@ pub fn create(mut args: Args) {
     assert!(matches!(args.command, Command::Create));
     let mut state = args.state.take().unwrap();
 
-    // println!("mnemo1: {}", state.cov_mnemonic);
-    // println!("mnemo1: {}", state.spend_mnemonic);
-
     let channel = Channel::from_state(&state);
-    let funding_addr = channel.cov_addr(0);
+    let funding_addr = channel.master_addr(0);
 
     eprintln!("Address to fund the contract: {}", funding_addr);
 

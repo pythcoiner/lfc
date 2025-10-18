@@ -15,8 +15,8 @@ use crate::{round::Rounds, Error, SECP};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChannelState {
-    /// Mnemonic of the covenant locking/unlocking policy
-    pub cov_mnemonic: String,
+    /// Mnemonic of the master locking/unlocking policy
+    pub master_mnemonic: String,
     /// Mnemonic of the spend policy
     pub spend_mnemonic: String,
     /// Max amount spendable at each round (sats)
@@ -78,8 +78,8 @@ impl ChannelState {
             .map_err(|_| Error::DeriveXpriv)
     }
 
-    pub fn cov_xpriv_at(&self, sub_account: u32, index: u32) -> Xpriv {
-        let xpriv = self.cov_master_xpriv().unwrap();
+    pub fn master_xpriv_at(&self, sub_account: u32, index: u32) -> Xpriv {
+        let xpriv = self.master_master_xpriv().unwrap();
         let derived = Self::derived_xpriv(xpriv, self.origin_path()).unwrap();
         let path = vec![
             ChildNumber::from_normal_idx(sub_account).unwrap(),
@@ -98,8 +98,8 @@ impl ChannelState {
         derived.derive_priv(&SECP, &path).unwrap()
     }
 
-    fn cov_master_xpriv(&self) -> Result<Xpriv, Error> {
-        Self::master_xpriv(&self.cov_mnemonic)
+    fn master_master_xpriv(&self) -> Result<Xpriv, Error> {
+        Self::master_xpriv(&self.master_mnemonic)
     }
 
     fn spend_master_xpriv(&self) -> Result<Xpriv, Error> {
@@ -120,8 +120,8 @@ impl ChannelState {
         Ok(DescriptorPublicKey::XPub(key))
     }
 
-    pub fn cov_xpub(&self, sub_account: u32) -> Result<DescriptorPublicKey, Error> {
-        self.xpub(self.cov_master_xpriv()?, sub_account)
+    pub fn master_xpub(&self, sub_account: u32) -> Result<DescriptorPublicKey, Error> {
+        self.xpub(self.master_master_xpriv()?, sub_account)
     }
 
     pub fn spend_xpub(&self, sub_account: u32) -> Result<DescriptorPublicKey, Error> {

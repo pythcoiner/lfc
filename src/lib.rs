@@ -66,11 +66,11 @@ mod tests {
 
     #[test]
     fn serialize_conf() {
-        let cov_mnemonic = Mnemonic::generate(12).unwrap().to_string();
+        let master_mnemonic = Mnemonic::generate(12).unwrap().to_string();
         let spend_mnemonic = Mnemonic::generate(12).unwrap().to_string();
 
         let conf = ChannelState {
-            cov_mnemonic,
+            master_mnemonic,
             spend_mnemonic,
             amount: 10_000_000,
             delay: 4500,

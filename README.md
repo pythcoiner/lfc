@@ -11,9 +11,9 @@ and our non rate limited spending condition is "signature from B ".
 
 For our simple example `S` will be defined as `pk(A)`
 
-### V covenant policy
+### M master policy
 
-For our simple example `V` will be defined as `pk(B)`
+For our simple example `M` will be defined as `pk(B)`
 
 ## Usage
 
@@ -31,13 +31,13 @@ you should get something like:
 ```
 Configuration: 
  {
-  "cov_mnemonic": "dice ghost nuclear autumn mixed come bubble sign fold short theme betray",
+  "master_mnemonic": "dice ghost nuclear autumn mixed come bubble sign fold short theme betray",
   "spend_mnemonic": "rigid engine whale execute panic fossil puppy clay syrup sausage broom shell",
   "amount": 10000000,
   "delay": 100,
   "index": 0
 }
-cov_descriptor: 
+master_descriptor: 
  
 wpkh([cb9debb0/84'/1'/0']tpubDCpNQyLf8GK7BYTM6mLSWPjicEmSFGbLCRmzHBk6mT8vuTqCwZXPDjGoeJ5N7BcLfW4UiNHnQpThyRbZdf441JuvoXQN6d2ZqBSE1F7KQgs/0/*)#e79fpkcm 
  
@@ -95,7 +95,7 @@ psbt 6:
  cHNidP8BAFICAAAAAdWLEAplAZx9j4lWK7cQLFvo6jw5rx+0/cLDbVPmnWJAAAAAAABkAAAAAYrREgAAAAAAFgAUSigjwYmX7JQxmoSL1JXt2i0jc/UAAAAAAAEBH+LTEgAAAAAAFgAUvqWxmgfqAGAThEK9nBnSfqrwapIiBgIgtparW7h26CUaKlabDlW4z21wDlYbcyCMaRCyWIJ4JRjLneuwVAAAgAEAAIAAAACAAAAAAAUAAAAAAA== 
 ```
 
- - you can now presign all these transactions w/ the `cov_descriptor` wallet from sparrow
+ - you can now presign all these transactions w/ the `master_descriptor` wallet from sparrow
  & store a copy of the presigned transactions.
 
  - you can now broadcast the transaction from `psbt1` directly and spend the coin w/ the spending key

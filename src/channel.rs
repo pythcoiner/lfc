@@ -42,32 +42,32 @@ pub fn txin(outpoint: OutPoint, sequence: u16) -> TxIn {
 
 pub struct Channel {
     #[allow(unused)]
-    cov: DescriptorPublicKey,
+    master: DescriptorPublicKey,
     #[allow(unused)]
     spend: DescriptorPublicKey,
     timelock: u16,
     network: Network,
-    cov_descriptor: Descriptor<DescriptorPublicKey>,
+    master_descriptor: Descriptor<DescriptorPublicKey>,
     spend_descriptor: Descriptor<DescriptorPublicKey>,
 }
 
 impl Channel {
     pub fn from_state(state: &ChannelState) -> Self {
-        let cov = state.cov_xpub(SUB_ACCOUNT).unwrap();
+        let master = state.master_xpub(SUB_ACCOUNT).unwrap();
         let spend = state.spend_xpub(SUB_ACCOUNT).unwrap();
         let timelock = state.delay();
         let network = state.network;
 
-        let cov_descriptor = Descriptor::Wpkh(Wpkh::new(cov.clone()).unwrap());
+        let master_descriptor = Descriptor::Wpkh(Wpkh::new(master.clone()).unwrap());
 
         let spend_descriptor = Descriptor::Wpkh(Wpkh::new(spend.clone()).unwrap());
 
         Self {
-            cov,
+            master,
             spend,
             timelock,
             network,
-            cov_descriptor,
+            master_descriptor,
             spend_descriptor,
         }
     }
@@ -80,8 +80,8 @@ impl Channel {
             .expect("must not fail")
     }
 
-    pub fn cov_addr(&self, index: u32) -> Address {
-        self.cov_descriptor
+    pub fn master_addr(&self, index: u32) -> Address {
+        self.master_descriptor
             .at_derivation_index(index)
             .expect("must not fail")
             .address(self.network)
@@ -111,7 +111,7 @@ impl Channel {
 
         let spend = Amount::from_sat(spend);
         let relock = Amount::from_sat(relock);
-        let relock_addr = self.cov_addr(index);
+        let relock_addr = self.master_addr(index);
         let relock_out = TxOut {
             value: relock,
             script_pubkey: relock_addr.into(),
@@ -145,15 +145,18 @@ impl Channel {
 
         // the previous tx address must have been generated at index-1
         assert!(self
-            .cov_addr(index - 1)
+            .master_addr(index - 1)
             .matches_script_pubkey(&previous_tx.output[0].script_pubkey));
-        let input_descriptor = self.cov_descriptor.at_derivation_index(index - 1).unwrap();
+        let input_descriptor = self
+            .master_descriptor
+            .at_derivation_index(index - 1)
+            .unwrap();
 
         psbt_input.witness_utxo = Some(previous_tx.output[0].clone());
 
         let psbt_inputs = vec![psbt_input];
 
-        let relock_decriptor = self.cov_descriptor.at_derivation_index(index).unwrap();
+        let relock_decriptor = self.master_descriptor.at_derivation_index(index).unwrap();
         let spend_descriptor = self.spend_descriptor.at_derivation_index(index).unwrap();
         let output_relock = Output::default();
         let output_spend = Output::default();
@@ -206,7 +209,7 @@ impl Channel {
         assert_eq!(psbt.inputs.len(), 1);
         // TODO: verify outputs go to the right descriptors
 
-        let xpriv = state.cov_xpriv_at(SUB_ACCOUNT, index);
+        let xpriv = state.master_xpriv_at(SUB_ACCOUNT, index);
         let sk = xpriv.private_key;
         let pk = sk.public_key(&SECP);
 

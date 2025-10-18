@@ -99,7 +99,7 @@ fn send_stdin(text: &str, stdin: &mut BufWriter<PipeWriter>) {
 
 fn init_conf(
     index: u32,
-    cov_mnemonic: Option<String>,
+    master_mnemonic: Option<String>,
     spend_mnemonic: Option<String>,
     amount: f64,
     delay: u64,
@@ -111,9 +111,9 @@ fn init_conf(
     send_stdin(&format!("{index}"), &mut stdin);
     print_stdout(&mut stdout, "");
 
-    let cov_mnemonic = cov_mnemonic.unwrap_or_default().to_string();
+    let master_mnemonic = master_mnemonic.unwrap_or_default().to_string();
     let spend_mnemonic = spend_mnemonic.unwrap_or_default().to_string();
-    send_stdin(&cov_mnemonic, &mut stdin);
+    send_stdin(&master_mnemonic, &mut stdin);
     print_stdout(&mut stdout, "");
 
     send_stdin(&spend_mnemonic, &mut stdin);
@@ -145,7 +145,7 @@ fn test_cli_conf() {
     stdout = output_contains("Select a derivation index for the wallet", stdout);
     send_stdin("0", &mut stdin);
 
-    stdout = output_contains("Enter the mnemonic for your covenant wallet", stdout);
+    stdout = output_contains("Enter the mnemonic for your master wallet", stdout);
     send_stdin("", &mut stdin);
 
     stdout = output_contains("Enter the mnemonic for your spending wallet", stdout);
@@ -167,7 +167,7 @@ fn test_cli_conf() {
     assert!(dir.exists());
 
     let state = ChannelState::from_file(dir.to_str().unwrap()).unwrap();
-    assert!(!state.cov_mnemonic.is_empty());
+    assert!(!state.master_mnemonic.is_empty());
     assert!(!state.spend_mnemonic.is_empty());
     assert_eq!(state.amount, 1_000_000);
     assert_eq!(state.delay, 100);
@@ -227,11 +227,11 @@ fn test_del() {
 #[test]
 fn test_create_sign_unlock() {
     // Create
-    let cov = "task glad violin popular angry arrange assume debate welcome earth crunch side"
+    let master = "task glad violin popular angry arrange assume debate welcome earth crunch side"
         .to_string();
     let spend =
         "ceiling blue sing poverty bean yellow fat basket merge behave crystal tiny".to_string();
-    let datadir = init_conf(0, Some(cov), Some(spend), 0.35, 100);
+    let datadir = init_conf(0, Some(master), Some(spend), 0.35, 100);
 
     let mut dir = datadir.path().to_path_buf();
     dir.push("lfc.conf");
