@@ -14,13 +14,12 @@ fn main() {
         } => {
             let height = *height;
             let tx = transaction.clone();
-            cli::commands::register(args, tx.clone(), height)
+            cli::commands::register(args, tx, height)
         }
-        Command::Spend {
-            amount: _,
-            address: _,
-        } => {}
-        Command::Spendable => todo!(),
+        Command::Spend { .. } => {
+            cli::commands::spend(args);
+        }
+        Command::Spendable => cli::commands::spendable(args),
         Command::Lock => todo!(),
         Command::Relock => todo!(),
         Command::Del => cli::commands::del_wallet(args),

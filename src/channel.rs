@@ -19,17 +19,17 @@ use miniscript::{
 const SUB_ACCOUNT: u32 = 0;
 
 #[macro_export]
-macro_rules! index_key {
+macro_rules! round_index_key {
     () => {
         ProprietaryKey {
             prefix: b"lfc".to_vec(),
             subtype: 0x01,
-            key: b"index".to_vec(),
+            key: b"round_index".to_vec(),
         }
     };
 }
 
-use crate::{channel_state::ChannelState, SECP};
+use crate::{channel_state::ChannelState, Error, FEE, SECP};
 
 pub fn txin(outpoint: OutPoint, sequence: u16) -> TxIn {
     TxIn {
@@ -88,13 +88,23 @@ impl Channel {
             .expect("must not fail")
     }
 
-    pub fn craft_tx(&self, previous_tx: Transaction, index: u32, spend: u64, relock: u64) -> Psbt {
-        // TODO: do not hardcode fees
-        const DUST: u64 = 500;
+    pub fn craft_round(
+        &self,
+        previous_tx: Transaction,
+        round_index: u32,
+        spend: u64,
+        relock: u64,
+        funding_pos: usize,
+        verbose: bool,
+    ) -> Psbt {
         let vbytes = 150;
         #[allow(clippy::identity_op)]
         let fees = vbytes * 1; /* sats */
-        println!("Generate transaction for round {index}, spending {spend} and relocking {relock}");
+        if verbose {
+            println!(
+            "Generate transaction for round {round_index}, spending {spend} and relocking {relock}"
+        );
+        }
 
         // deduct fees
         let (spend, relock) = if relock < fees {
@@ -107,16 +117,16 @@ impl Channel {
             (spend, relock)
         };
 
-        let relock = if relock < DUST { 0 } else { relock };
+        let relock = if relock < (FEE * 2) { 0 } else { relock };
 
         let spend = Amount::from_sat(spend);
         let relock = Amount::from_sat(relock);
-        let relock_addr = self.master_addr(index);
+        let relock_addr = self.master_addr(round_index);
         let relock_out = TxOut {
             value: relock,
             script_pubkey: relock_addr.into(),
         };
-        let spend_addr = self.spend_addr(index);
+        let spend_addr = self.spend_addr(round_index);
         let spend_out = TxOut {
             value: spend,
             script_pubkey: spend_addr.into(),
@@ -124,9 +134,9 @@ impl Channel {
 
         let outpoint = OutPoint {
             txid: previous_tx.compute_txid(),
-            vout: 0,
+            vout: funding_pos as u32,
         };
-        let sequence = if index == 1 { 0 } else { self.timelock };
+        let sequence = if round_index == 1 { 0 } else { self.timelock };
         let tx_input = txin(outpoint, sequence);
 
         let outputs = if relock != Amount::ZERO {
@@ -143,21 +153,27 @@ impl Channel {
         };
         let mut psbt_input = Input::default();
 
-        // the previous tx address must have been generated at index-1
+        // verify the funding pos match our key
         assert!(self
-            .master_addr(index - 1)
-            .matches_script_pubkey(&previous_tx.output[0].script_pubkey));
+            .master_addr(round_index - 1)
+            .matches_script_pubkey(&previous_tx.output[funding_pos].script_pubkey));
         let input_descriptor = self
             .master_descriptor
-            .at_derivation_index(index - 1)
+            .at_derivation_index(round_index - 1)
             .unwrap();
 
-        psbt_input.witness_utxo = Some(previous_tx.output[0].clone());
+        psbt_input.witness_utxo = Some(previous_tx.output[funding_pos].clone());
 
         let psbt_inputs = vec![psbt_input];
 
-        let relock_decriptor = self.master_descriptor.at_derivation_index(index).unwrap();
-        let spend_descriptor = self.spend_descriptor.at_derivation_index(index).unwrap();
+        let relock_decriptor = self
+            .master_descriptor
+            .at_derivation_index(round_index)
+            .unwrap();
+        let spend_descriptor = self
+            .spend_descriptor
+            .at_derivation_index(round_index)
+            .unwrap();
         let output_relock = Output::default();
         let output_spend = Output::default();
 
@@ -169,7 +185,7 @@ impl Channel {
 
         // store the index in the proprietary map
         let mut proprietary = BTreeMap::new();
-        proprietary.insert(index_key!(), index.to_le_bytes().to_vec());
+        proprietary.insert(round_index_key!(), round_index.to_le_bytes().to_vec());
 
         let mut psbt = Psbt {
             unsigned_tx: tx,
@@ -195,11 +211,11 @@ impl Channel {
         psbt
     }
 
-    pub fn presign_psbt(&self, psbt: &mut Psbt, state: &ChannelState) {
+    pub fn presign_round(&self, psbt: &mut Psbt, state: &ChannelState) {
         // index is stored in the proprietary map
         let raw_index: [u8; 4] = psbt
             .proprietary
-            .get(&index_key!())
+            .get(&round_index_key!())
             .unwrap()
             .to_vec()
             .try_into()
@@ -225,5 +241,47 @@ impl Channel {
         psbt.inputs[0]
             .partial_sigs
             .insert(pk.to_public_key(), signature);
+    }
+
+    pub fn sign_spend(&self, psbt: &mut Psbt, state: &ChannelState) -> Result<(), Error> {
+        // TODO: handle errors
+
+        // sanity check psbt
+        assert_eq!(psbt.inputs.len(), psbt.unsigned_tx.input.len());
+        assert_eq!(psbt.outputs.len(), psbt.unsigned_tx.output.len());
+
+        // TODO: check outputs structure
+
+        let spend_fg = state.spend_fingerprint().unwrap();
+        let mut cache = sighash::SighashCache::new(psbt.unsigned_tx.clone());
+
+        for i in 0..psbt.inputs.len() {
+            let deriv = psbt.inputs[i].bip32_derivation.clone();
+            for (pk, (fg, deriv)) in deriv {
+                if fg == spend_fg {
+                    let index = *deriv.to_u32_vec().last().unwrap();
+                    let sk = state.spend_xpriv_at(SUB_ACCOUNT, index).private_key;
+                    let pbk = sk.public_key(&SECP);
+                    assert_eq!(pk, pbk);
+                    let (msg, sighash_type) = psbt.sighash_ecdsa(i, &mut cache).unwrap();
+                    assert_eq!(sighash_type, EcdsaSighashType::All);
+                    let signature = SECP.sign_ecdsa_low_r(&msg, &sk);
+                    let signature = ecdsa::Signature {
+                        signature,
+                        sighash_type: EcdsaSighashType::All,
+                    };
+                    psbt.inputs[i]
+                        .partial_sigs
+                        .insert(pk.to_public_key(), signature);
+                } else {
+                    panic!("only owned coins are allowed in spend transactions!");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn spend_descriptor(&self) -> Descriptor<DescriptorPublicKey> {
+        self.spend_descriptor.clone()
     }
 }

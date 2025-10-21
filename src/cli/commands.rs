@@ -1,15 +1,10 @@
 use std::{
     io::{self, Write},
+    process::{self},
     str::FromStr,
 };
 
-use crate::{
-    channel::Channel,
-    channel_state::ChannelState,
-    parse_tx,
-    round::{Round, Rounds},
-    FEE, MAX_DERIV,
-};
+use crate::{channel_state::ChannelState, parse_tx, round::Rounds, FEE, MAX_DERIV};
 use bip39::Mnemonic;
 use clap::Subcommand;
 use miniscript::bitcoin::{
@@ -154,16 +149,15 @@ pub fn create(mut args: Args) {
     assert!(matches!(args.command, Command::Create));
     let mut state = args.state.take().unwrap();
 
-    let channel = Channel::from_state(&state);
-    let funding_addr = channel.master_addr(0);
+    let funding_addr = state.funding_address();
 
-    eprintln!("Address to fund the contract: {}", funding_addr);
+    println!("Address to fund the contract: {}", funding_addr);
 
     let mut raw_tx = input("Enter raw tx that fund the contract:");
     raw_tx = raw_tx.trim().into();
 
     let tx0: Result<Transaction, _> = consensus::encode::deserialize_hex(&raw_tx);
-    let tx0 = match tx0 {
+    let funding_tx = match tx0 {
         Ok(tx) => tx,
         Err(e) => {
             eprintln!("Fail to parse transaction: \n {} \n {}", raw_tx, e);
@@ -171,66 +165,12 @@ pub fn create(mut args: Args) {
         }
     };
 
-    let mut amount = None;
-    for txout in &tx0.output {
-        if txout.script_pubkey == funding_addr.script_pubkey() {
-            amount = Some(txout.value);
-        }
-    }
-
-    if amount.is_none() {
-        eprintln!("This transaction do not contains a funding output!");
+    if let Err(e) = state.generate_rounds(funding_tx, FEE, true) {
+        println!("{e}");
         std::process::exit(1);
     }
 
-    let amount = amount.unwrap().to_sat();
-
-    if amount == 0 {
-        eprintln!("Amount of funding output must be > 0");
-        std::process::exit(1);
-    }
-
-    let mut txs = Vec::new();
-    let mut previous_tx = tx0;
-    let mut previous_amount = amount;
-    let mut index = 1;
-
-    loop {
-        let (spend, relock) = if previous_amount > state.amount {
-            let mut relock = previous_amount.saturating_sub(state.amount);
-            if relock <= FEE {
-                relock = 0;
-            }
-            let spend = if relock == 0 {
-                previous_amount.saturating_sub(FEE)
-            } else {
-                state.amount
-            };
-            (spend, relock)
-        } else {
-            (previous_amount - FEE, 0)
-        };
-        let psbt = channel.craft_tx(previous_tx.clone(), index, spend, relock);
-        previous_tx = psbt.unsigned_tx.clone();
-        previous_amount = previous_tx.output[0].value.to_sat();
-        index += 1;
-
-        txs.push(psbt);
-
-        if relock < (2 * FEE) {
-            break;
-        }
-    }
-
-    let mut index = 0;
-    #[allow(clippy::explicit_counter_loop)]
-    for psbt in txs {
-        index += 1;
-        let round = Round::new(psbt, index);
-        state.rounds.push(round);
-    }
-
-    println!("Successfully generated {index} rounds!");
+    println!("Successfully generated {} rounds!", state.rounds.count());
 
     state.to_file().unwrap();
 }
@@ -238,32 +178,18 @@ pub fn create(mut args: Args) {
 pub fn sign(mut args: Args) {
     assert!(matches!(args.command, Command::Sign));
     let mut state = args.state.take().unwrap();
-    assert!(!state.rounds.is_empty());
 
-    let channel = Channel::from_state(&state);
-
-    let s = state.clone();
-    let mut index = 0;
-    for round in state.rounds.as_mut_vec() {
-        index += 1;
-        println!("Signing round {index}");
-        round.sign(|psbt| {
-            channel.presign_psbt(psbt, &s);
-        });
+    if state.sign_rounds(true).is_ok() {
+        println!("Successfully signed {} rounds!", state.rounds.count());
+        state.to_file().unwrap();
+    } else {
+        process::exit(1)
     }
-
-    println!("Successfully signed {index} rounds!");
-
-    state.to_file().unwrap();
 }
 
 pub fn unlock(mut args: Args) {
     assert!(matches!(args.command, Command::Unlock));
     let mut state = args.state.take().unwrap();
-    let rounds = &mut state.rounds;
-
-    let index = rounds.current_round_index();
-    let current = rounds.at(index).unwrap();
 
     fn on_unlock_tx(tx: Transaction, height: Option<u64>, index: usize, next: bool) {
         let round = if next { "next" } else { "current" };
@@ -279,41 +205,19 @@ pub fn unlock(mut args: Args) {
         }
     }
 
-    match current.unlock() {
-        Some(tx) => {
-            let height = current.unlock_after();
-            on_unlock_tx(tx, height, index, false);
+    match state.unlock_next() {
+        Ok((tx, height, index, next)) => {
+            on_unlock_tx(tx, height, index, next);
         }
-        None => {
-            let next = rounds.at(index + 1);
-            if let Some(next) = next {
-                if let Some(tx) = next.unlock() {
-                    let height = next.unlock_after();
-                    on_unlock_tx(tx, height, index + 1, true);
-                } else {
-                    println!("Fail to get unlock transaction for this round and next one! (rounds {index} & {})", index + 1);
-                }
-            } else {
-                println!("No more round to unlock!");
-            }
-        }
+        Err(e) => println!("{e}"),
     }
 }
 
 pub fn register(mut args: Args, tx: Transaction, height: u64) {
     assert!(matches!(args.command, Command::Register { .. }));
     let mut state = args.state.take().unwrap();
-    let delay = state.delay() as u64;
-    let rounds = &mut state.rounds;
-
-    let (unlock, spend) = rounds.register(tx, height, delay);
-    if unlock {
-        println!("Unlock registered!")
-    } else if spend {
-        println!("Spend registered!")
-    } else {
-        println!("Transaction has not been registered!")
-    }
+    let registered = state.register(tx, height);
+    println!("{registered}");
 
     state.to_file().unwrap();
 }
@@ -324,4 +228,43 @@ pub fn status(args: Args) {
 
     let status = serde_json::to_string_pretty(&state).unwrap();
     eprintln!("{status}")
+}
+
+pub fn spend(args: Args) {
+    assert!(matches!(args.command, Command::Spend { .. }));
+    let state = args.state.unwrap();
+    if let Command::Spend { amount, address } = args.command {
+        let amount = Amount::from_btc(amount).unwrap().to_sat();
+        match state.create_spend(address, amount) {
+            Ok((tx, amount, addr)) => {
+                let tx = consensus::encode::serialize_hex(&tx);
+                println!(
+                    "Broadcast this transaction for spend {} to {}: \n{}",
+                    amount, addr, tx
+                );
+            }
+            Err(e) => {
+                println!("{e}");
+                process::exit(1)
+            }
+        }
+    } else {
+        unreachable!()
+    }
+}
+
+pub fn spendable(args: Args) {
+    assert!(matches!(args.command, Command::Spendable));
+    let state = args.state.unwrap();
+    let spendable_coins = state.rounds.spendable_coins();
+    if spendable_coins.is_empty() {
+        println!("No spendable coins!");
+        return;
+    }
+
+    let spendable_amt = state.rounds.spendable_amount();
+    println!("Total spendable: {spendable_amt}");
+    for c in spendable_coins {
+        println!("{}: {}", c.outpoint, c.prevout.value);
+    }
 }

@@ -1,12 +1,19 @@
-use std::fmt::Debug;
+use std::{collections::BTreeMap, fmt::Debug};
 
 use miniscript::{
-    bitcoin::{Amount, OutPoint, Psbt, Transaction, TxOut},
+    bitcoin::{
+        absolute::{Height, LockTime},
+        bip32::ChildNumber,
+        psbt::{Input, Output},
+        transaction::Version,
+        Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Transaction, TxOut, Txid,
+    },
     psbt::PsbtExt,
+    Descriptor, DescriptorPublicKey,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::SECP;
+use crate::{channel::txin, Error, SECP};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct Round {
@@ -16,10 +23,6 @@ pub struct Round {
     signed: Option<Transaction>,
     // The transaction that have unlocked this round
     spend: Option<Transaction>,
-    // Spending txs (ancestors of `coins`)
-    transactions: Vec<Transaction>,
-    // Coins spendable by the spend key
-    coins: Vec<OutPoint>,
     // Blockheight we must wait to unlock
     unlock: Option<u64>,
     // Blockheight of the block containing the unlock tx
@@ -38,8 +41,6 @@ impl Debug for Round {
             .field("psbt", &"[redacted]".to_string())
             .field("signed_tx", &self.signed.is_some())
             .field("spend_tx", &self.spend.is_some())
-            .field("transactions", &self.transactions.len())
-            .field("coins", &self.coins.len())
             .field("unlock", &self.unlock)
             .field("unlocked", &self.unlocked)
             .field("index", &self.index)
@@ -57,8 +58,6 @@ impl Round {
             psbt,
             signed: None,
             spend: None,
-            transactions: Vec::new(),
-            coins: Vec::new(),
             unlock: None,
             unlocked: None,
             index,
@@ -78,10 +77,7 @@ impl Round {
                 self.signed = Some(tx);
                 true
             }
-            Err(e) => {
-                println!("Fail to sign: {e:#?}");
-                false
-            }
+            Err(_) => false,
         }
     }
 
@@ -95,7 +91,7 @@ impl Round {
 
     pub fn is_unlockable(&self, block_height: u64) -> bool {
         let timelocked = if let Some(height) = self.unlock {
-            block_height > height
+            block_height >= height
         } else {
             self.index == 1
         };
@@ -142,46 +138,27 @@ impl Round {
     pub fn register_unlock_height(&mut self, block_height: u64) {
         self.unlock = Some(block_height);
     }
-
-    pub fn is_spendable(&self) -> bool {
-        self.is_unlocked() && !self.coins.is_empty()
-    }
-
-    fn tx_for_coin(&self, coin: &OutPoint) -> Option<&Transaction> {
-        let mut tx = None;
-        self.transactions.iter().for_each(|t| {
-            if t.compute_txid() == coin.txid {
-                tx = Some(t);
-            }
-        });
-        tx
-    }
-
-    pub fn spendable_amount(&self) -> Amount {
-        let mut amount = Amount::ZERO;
-        self.spendable_coins().iter().for_each(|c| {
-            amount += c.value;
-        });
-        amount
-    }
-
-    pub fn spendable_coins(&self) -> Vec<TxOut> {
-        let mut coins = Vec::new();
-        self.coins.iter().for_each(|c| {
-            let tx = self.tx_for_coin(c).unwrap();
-            coins.push(tx.output[c.vout as usize].clone());
-        });
-        coins
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Rounds(Vec<Round>);
+pub struct Coin {
+    pub outpoint: OutPoint,
+    pub prevout: TxOut,
+    pub index: ChildNumber,
+    pub spent: bool,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Rounds {
+    rounds: Vec<Round>,
+    transactions: BTreeMap<Txid, Transaction>,
+    coins: BTreeMap<OutPoint, Coin>,
+    spend_index: u32,
+}
 
 impl Rounds {
     pub fn new() -> Self {
-        let rounds = Vec::new();
-        Rounds(rounds)
+        Default::default()
     }
 
     pub fn init(&mut self) {
@@ -190,7 +167,7 @@ impl Rounds {
         if !self.is_empty() {
             let mut last = 0u32;
             let mut active = 0usize;
-            self.0.iter().for_each(|r| {
+            self.rounds.iter().for_each(|r| {
                 assert!(r.index == last + 1);
                 last += 1;
                 if r.is_active() {
@@ -201,26 +178,41 @@ impl Rounds {
         }
     }
 
+    pub fn count(&self) -> usize {
+        self.rounds.len()
+    }
+
+    pub fn set_spend_index(&mut self, index: u32) {
+        // we can only increment this index
+        if index > self.spend_index {
+            self.spend_index = index;
+        }
+    }
+
+    pub fn spend_index(&self) -> u32 {
+        self.spend_index
+    }
+
     pub fn is_unlocked(&self) -> bool {
-        if self.0.is_empty() {
+        if self.rounds.is_empty() {
             false
         } else {
-            self.0[0].is_unlocked()
+            self.rounds[0].is_unlocked()
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.rounds.is_empty()
     }
 
     pub fn sort(&mut self) {
-        self.0.sort_by(|a, b| a.index.cmp(&b.index));
+        self.rounds.sort_by(|a, b| a.index.cmp(&b.index));
     }
 
     pub fn current_round_index(&mut self) -> usize {
         //sort & sanity check
         self.init();
-        for (i, r) in self.0.iter().enumerate() {
+        for (i, r) in self.rounds.iter().enumerate() {
             if r.is_active() {
                 return i;
             }
@@ -229,35 +221,40 @@ impl Rounds {
     }
 
     pub fn at(&mut self, pos: usize) -> Option<&mut Round> {
-        if pos < self.0.len() {
-            Some(&mut self.0[pos])
+        if pos < self.rounds.len() {
+            Some(&mut self.rounds[pos])
         } else {
             None
         }
     }
 
     pub fn push(&mut self, round: Round) {
-        self.0.push(round);
+        self.rounds.push(round);
     }
 
-    pub fn spendable_coins(&self) -> Vec<TxOut> {
-        let mut coins = Vec::new();
-        self.0.iter().for_each(|r| {
-            coins.append(&mut r.spendable_coins());
-        });
-        coins
+    pub fn spendable_coins(&self) -> Vec<Coin> {
+        self.coins
+            .iter()
+            .filter_map(|(_, c)| (!c.spent).then_some(c.clone()))
+            .collect()
     }
 
     pub fn spendable_amount(&self) -> Amount {
-        let mut coins = Amount::ZERO;
-        self.0.iter().for_each(|r| {
-            coins += r.spendable_amount();
-        });
-        coins
+        self.spendable_coins()
+            .into_iter()
+            .fold(Amount::ZERO, |a, b| a + b.prevout.value)
+    }
+
+    pub fn transactions(&self) -> BTreeMap<Txid, Transaction> {
+        self.transactions.clone()
+    }
+
+    pub fn insert_transaction(&mut self, tx: Transaction) {
+        self.transactions.insert(tx.compute_txid(), tx);
     }
 
     pub fn unlock(&mut self, chain_tip: u64) -> Option<Transaction> {
-        if self.0.is_empty() {
+        if self.rounds.is_empty() {
             return None;
         }
         let index = self.current_round_index();
@@ -289,7 +286,16 @@ impl Rounds {
         }
     }
 
-    fn try_register_unlock(&mut self, tx: Transaction, block_height: u64, delay: u64) -> bool {
+    fn try_register_unlock<'a, D>(
+        &mut self,
+        tx: Transaction,
+        block_height: u64,
+        delay: u64,
+        derive: &D,
+    ) -> bool
+    where
+        D: Fn(ChildNumber) -> ScriptBuf + 'a,
+    {
         let index = self.current_round_index();
 
         let current_unlocked = self.at(index).unwrap().is_unlocked();
@@ -297,7 +303,7 @@ impl Rounds {
             // We try unlock current round
             let round = self.at(index).unwrap();
             let unlocked = if round.is_unlockable(block_height) {
-                round.register_unlocked(tx, block_height)
+                round.register_unlocked(tx.clone(), block_height)
             } else {
                 false
             };
@@ -308,7 +314,7 @@ impl Rounds {
         } else if let Some(next) = self.at(index + 1) {
             // We try unlock the next round
             if !next.is_unlocked() && next.is_unlockable(block_height) {
-                let ul = next.register_unlocked(tx, block_height);
+                let ul = next.register_unlocked(tx.clone(), block_height);
                 if ul {
                     next.set_active(true);
                     self.at(index).expect("current round").set_active(false);
@@ -323,40 +329,213 @@ impl Rounds {
         } else {
             false
         };
+        if unlocked {
+            let mut spk_index_map = BTreeMap::new();
+            for i in 0..self.rounds.len() + 1 {
+                let i = ChildNumber::from_normal_idx(i as u32).unwrap();
+                let spk = derive(i);
+                spk_index_map.insert(spk, i);
+            }
+
+            let txid = tx.compute_txid();
+            for (i, out) in tx.output.iter().enumerate() {
+                if let Some(index) = spk_index_map.get(&out.script_pubkey).cloned() {
+                    let op = OutPoint {
+                        txid,
+                        vout: i as u32,
+                    };
+                    self.coins.insert(
+                        op,
+                        Coin {
+                            prevout: out.clone(),
+                            index,
+                            spent: false,
+                            outpoint: op,
+                        },
+                    );
+                }
+            }
+
+            self.transactions.insert(tx.compute_txid(), tx);
+        }
         unlocked
     }
 
-    fn register_spend(&mut self, _tx: Transaction) -> bool {
-        // TODO: iterate over all active rounds and update state
-        todo!()
+    fn try_register_spend<'a, D>(&mut self, tx: Transaction, derive: &D) -> bool
+    where
+        D: Fn(ChildNumber) -> ScriptBuf + 'a,
+    {
+        let mut spend = false;
+        // register spent coins
+        for i in &tx.input {
+            if let Some(coin) = self.coins.get_mut(&i.previous_output) {
+                if coin.spent {
+                    println!("Spend transaction try to spend an already spent coin!");
+                    return false;
+                }
+                coin.spent = true;
+                spend = true;
+            } else {
+                println!("Spend transaction can only spend owned coins!");
+                return false;
+            }
+        }
+        // register newly created owned coins
+        let txid = tx.compute_txid();
+
+        // we look ahead of the current spend index to find changes coins
+        let mut spk_index_map = BTreeMap::new();
+        for index in 0..self.spend_index() + 100 {
+            let index = ChildNumber::from_normal_idx(index).unwrap();
+            let script = derive(index);
+            spk_index_map.insert(script, index);
+        }
+
+        for (vout, o) in tx.output.iter().enumerate() {
+            if let Some(index) = spk_index_map.get(&o.script_pubkey) {
+                // This coin is owned
+                let prevout = OutPoint {
+                    txid,
+                    vout: vout as u32,
+                };
+                self.coins.insert(
+                    prevout,
+                    Coin {
+                        prevout: o.clone(),
+                        index: *index,
+                        spent: false,
+                        outpoint: prevout,
+                    },
+                );
+            }
+        }
+        if spend {
+            self.insert_transaction(tx);
+        }
+        spend
     }
 
-    pub fn register(
+    pub fn register<'a, D>(
         &mut self,
         tx: Transaction,
         block_height: u64,
         delay: u64,
-    ) -> (bool /* unlock */, bool /* spend */) {
-        let spend = false;
+        derive: D,
+    ) -> (bool /* unlock */, bool /* spend */)
+    where
+        D: Fn(ChildNumber) -> ScriptBuf + 'a,
+    {
+        let unlocked = self.try_register_unlock(tx.clone(), block_height, delay, &derive);
 
-        let unlocked = self.try_register_unlock(tx.clone(), block_height, delay);
+        let spend = if !unlocked {
+            self.try_register_spend(tx, &derive)
+        } else {
+            false
+        };
 
-        // TODO:
-        // let spend = if !unlocked {
-        //     self.register_spend(tx)
-        // } else {
-        //     false
-        // };
         (unlocked, spend)
     }
 
-    pub fn as_mut_vec(&mut self) -> &mut Vec<Round> {
-        &mut self.0
-    }
-}
+    pub fn craft_spend(
+        &self,
+        addr: Address,
+        amount: Amount,
+        spend_descriptor: Descriptor<DescriptorPublicKey>,
+    ) -> Result<Psbt, Error> {
+        // FIXME: do not hardcode fees
+        const FEE: Amount = Amount::from_sat(150);
 
-impl Default for Rounds {
-    fn default() -> Self {
-        Self::new()
+        let spendable = self.spendable_amount();
+        let mut change_amt = if spendable < (amount + FEE) {
+            return Err(Error::UnsufficientBalance(spendable, amount));
+        } else {
+            spendable - amount - FEE
+        };
+
+        // DUST
+        if change_amt < Amount::from_sat(500) {
+            change_amt = Amount::ZERO;
+        }
+
+        let change_index = ChildNumber::from_normal_idx(self.spend_index() + 1).unwrap();
+        let change_script = spend_descriptor
+            .at_derivation_index(change_index.into())
+            .unwrap()
+            .address(Network::Regtest)
+            .unwrap()
+            .script_pubkey();
+        let change = TxOut {
+            value: change_amt,
+            script_pubkey: change_script,
+        };
+        let send = TxOut {
+            value: amount,
+            script_pubkey: addr.script_pubkey(),
+        };
+
+        let inputs_coins = self.spendable_coins();
+        let inputs = inputs_coins
+            .iter()
+            .map(|c| -> _ { txin(c.outpoint, 0) })
+            .collect();
+        let (outputs, change_pos) = if change_amt != Amount::ZERO {
+            (vec![change, send], Some(0usize))
+        } else {
+            (vec![send], None)
+        };
+
+        let tx = Transaction {
+            version: Version(2),
+            lock_time: LockTime::Blocks(Height::ZERO),
+            input: inputs,
+            output: outputs,
+        };
+        let mut psbt_inputs = vec![];
+        let mut input_indexes = vec![];
+        for inp in inputs_coins {
+            let mut i = Input::default();
+            let op = inp.outpoint;
+            let funding_tx = self.transactions.get(&op.txid).unwrap();
+            i.witness_utxo = Some(funding_tx.output[op.vout as usize].clone());
+            psbt_inputs.push(i);
+            input_indexes.push(inp.index);
+        }
+
+        let mut psbt_outputs = vec![];
+        for _ in 0..tx.output.len() {
+            psbt_outputs.push(Output::default());
+        }
+
+        let mut psbt = Psbt {
+            unsigned_tx: tx,
+            version: 0,
+            xpub: BTreeMap::new(),
+            proprietary: Default::default(),
+            unknown: BTreeMap::new(),
+            inputs: psbt_inputs,
+            outputs: psbt_outputs,
+        };
+
+        // Populate inputs metadata
+        for (index, child) in input_indexes.iter().enumerate() {
+            let input_descriptor = spend_descriptor
+                .at_derivation_index((*child).into())
+                .unwrap();
+            PsbtExt::update_input_with_descriptor(&mut psbt, index, &input_descriptor).unwrap();
+        }
+
+        // Populate change output metadata
+        if let Some(pos) = change_pos {
+            let change_descriptor = spend_descriptor
+                .at_derivation_index(change_index.into())
+                .unwrap();
+            PsbtExt::update_output_with_descriptor(&mut psbt, pos, &change_descriptor).unwrap();
+        }
+
+        Ok(psbt)
+    }
+
+    pub fn as_mut_vec(&mut self) -> &mut Vec<Round> {
+        &mut self.rounds
     }
 }
